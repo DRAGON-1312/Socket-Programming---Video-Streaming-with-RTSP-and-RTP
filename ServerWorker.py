@@ -5,7 +5,7 @@ from VideoStream import VideoStream
 from RtpPacket import RtpPacket
 
 # Addition for HD Video Streaming
-MAX_RTP_PAYLOAD = 8000  # HD: tối đa ~8000 bytes payload/packet
+MAX_RTP_PAYLOAD = 1400  # HD: tối đa ~1400 bytes payload/packet
 
 class ServerWorker:
 	SETUP = 'SETUP'

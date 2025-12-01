@@ -11,6 +11,9 @@ from RtpPacket import RtpPacket
 # Addition for Smooth HD playback with low latency of HD Video Streaming
 from time import time, sleep
 
+# Addition for Client-Side Caching
+from collections import deque
+
 # CACHE_FILE_NAME + CACHE_FILE_TEXT: mỗi frame nhận được sẽ được ghi ra file tạm cache-<sessionId>.jpg
 # rồi mới load lên GUI
 CACHE_FILE_NAME = "cache-"
@@ -71,6 +74,14 @@ class Client:
 		self.frameDisplayed = 0 # số frame thật sự show lên GUI
 		self.totalBytes = 0		# tổng số byte RTP nhận
 		self.startTime = None	# thời điểm nhận packet đầu tiên
+		self.framesReceived = 0  # số frame nhận được (sau prebuffer) dùng cho thống kê loss
+  
+		# Advanced: Client-side caching (frame buffer)
+		self.enableCache = True		# Bật/tắt tính năng cache
+		self.cachePreload = 10			# N: số frame pre-buffer trước khi hiển thị
+		self.cacheMaxSize = 50			# Giới hạn kích thước buffer
+		self.frameCache = deque(maxlen=self.cacheMaxSize)
+		self.cachePrebuffering = False	# True = đang tích lũy N frame đầu tiên
 		
   
 	# dùng để tạo ra giao diện chính gồm: 4 nút điều khiển và 1 nhãn lớn để hiển thị nội dung phim + Các thành phần được bố trí bằng grid layout để dễ căn chỉnh.
@@ -148,79 +159,143 @@ class Client:
 			self.playEvent.clear()
 			self.sendRtspRequest(self.PLAY)
 	
-	"""Hàm này chạy trong 1 vòng lặp vô hạn để nhận các gói RTP từ socket UDP, giải mã chúng, 
- 	lọc gói trễ theo seq number, rồi cặp nhật lên GUI"""
-	def listenRtp(self):		
+	def listenRtp(self):
 		"""Listen for RTP packets."""
 		while True:
 			try:
-				data = self.rtpSocket.recv(20480) # nhận các gói RTP từ socket UDP (nhận tối đa 20480 bytes)
-				if data: # nếu có dữ liệu tiếp tục giải mã
+				data = self.rtpSocket.recv(20480) # nhận các gói RTP
+				if data:
 					rtpPacket = RtpPacket()
 					rtpPacket.decode(data)
-					
-					currFrameNbr = rtpPacket.seqNum() # trả về seqNum gói RTP. Dùng để phát hiện gói đến trễ hoặc mất gói
-					print("Current Seq Num: " + str(currFrameNbr))
      
-					# cập nhật thống kê (Frame loss and network usage analysis)
+					currFrameNbr = rtpPacket.seqNum()
+					# Dòng này để debug
+					# print("Current Seq Num: " + str(currFrameNbr))
+     
+					# Cập nhật thống kê (frame loss + data rate)
 					if self.startTime is None:
 						self.startTime = time()
       
 					self.totalBytes += len(data)
      
-					if self.firstSeq is None:
-						self.firstSeq = currFrameNbr
-					if currFrameNbr > self.maxSeq:
-						self.maxSeq = currFrameNbr
-     
-					marker = rtpPacket.marker() # HD: bit M (phần thêm của HD video streaming) 
-									
-					# Nếu nhận frame mới (seq lớn hơn frame đã hoàn thành trước đó)
+					# CHỈ ĐẾM LOSS KHI KHÔNG PRE-BUFFER
+					# cachePrebuffering : True trong giai đoạn [CACHE] Prebuffering, 
+					#                     False khi đã bắt đầu [CACHE] Playing from buffer
+					if (not self.enableCache) or (not self.cachePrebuffering):
+						if self.firstSeq is None:
+							# Frame đầu tiên: gán luôn cả firstSeq và maxSeq
+							self.firstSeq = currFrameNbr
+							self.maxSeq = currFrameNbr
+						else:
+							# LOSS-DEBUG: nếu seq nhảy lớn hơn maxSeq+1 ⇒ thật sự có frame bị drop trên đường đi
+							#if currFrameNbr > self.maxSeq + 1:
+								#missing = currFrameNbr - (self.maxSeq + 1)
+								#print(
+									#f"[LOSS-DEBUG] Missing {missing} frame(s): "
+									#f"expected {self.maxSeq + 1}..{currFrameNbr - 1}, got {currFrameNbr}"
+								#)
+
+							# Cập nhật maxSeq bình thường
+							if currFrameNbr > self.maxSeq:
+								self.maxSeq = currFrameNbr
+      
+					marker = rtpPacket.marker() 	# bit M - dùng cho HD + fragmentation
+	
+					# Ghép các mảnh thành 1 frame hoàn chỉnh
 					if currFrameNbr > self.frameNbr:
-						# Bắt đầu ghép frame mới
+						# bắt đầu frame mới
 						self.frameNbr = currFrameNbr
 						self.frameBuffer = bytearray()
       
-					# Chỉ ghép những packet thuộc frame hiện tại
+					# chỉ ghép các packet thuộc frame hiện tại
 					if currFrameNbr == self.frameNbr:
 						self.frameBuffer.extend(rtpPacket.getPayload())
       
-						# Nếu marker = 1 ⇒ mảnh cuối cùng của frame
+						# Nếu marker = 1 ⇒ đây là mảnh cuối cùng của frame
 						if marker == 1:
-							# Smooth playback (giữ FPS ổn định)
+							# copy ra bytes để đưa vào cache / ghi file
+							fullFrame = bytes(self.frameBuffer)
+							print(f"[FRAME DONE] seq={currFrameNbr}")
+       
+							# ĐẾM SỐ FRAME NHẬN ĐƯỢC (sau pre-buffer) DÙNG CHO THỐNG KÊ LOSS
+							if (not self.enableCache) or (not self.cachePrebuffering):
+								self.framesReceived += 1
+
+							# CLIENT-SIDE CACHING
+							if self.enableCache:
+								# Đẩy frame mới vào hàng đợi (buffer phía client)
+								self.frameCache.append(fullFrame)
+
+								# Giai đoạn pre-buffer: tích lũy N frame đầu
+								if self.cachePrebuffering:
+									# Dòng print này để debug
+									#print(f"[CACHE] Prebuffering {len(self.frameCache)}/{self.cachePreload}")
+
+									# Lần đầu tiên vào pre-buffer, in 1 dòng để thấy đang bật cache
+									if len(self.frameCache) == 1:
+										print(f"[CACHE] Enabled – preloading {self.cachePreload} frames before playback")
+          
+									# chưa đủ N frame → CHỈ tích lũy, KHÔNG hiển thị
+									if len(self.frameCache) < self.cachePreload:
+										self.frameBuffer = bytearray()
+										continue	# ko show, quay lại nhận gói tiếp theo
+									else:
+										# đủ N frame → tắt pre-buffer, bắt đầu play trong buffer
+										self.cachePrebuffering = False
+										print(f"[CACHE] Prebuffering done – start playing from buffer")
+								else:
+									# Dòng print này để debug
+									#print(f"[CACHE] Playing from buffer, size={len(self.frameCache)}")
+         
+									# (in nhẹ 1 lần khi bắt đầu)
+									if len(self.frameCache) == self.cachePreload:
+										print(f"[CACHE] Playing from buffer, initial size={len(self.frameCache)}")
+
+								# Giai đoạn play trong buffer
+								# mỗi lần nhận thêm 1 frame, show frame lâu nhất trong buffer (FIFO)
+								if len(self.frameCache) > 0:
+									frameToShow = self.frameCache.popleft()
+								else:
+									# fallback: nếu buffer rỗng (mất gói nhiều) thì show frame vừa nhận
+									frameToShow = fullFrame
+							else:
+								# không bật cache → hành vi cũ: show luôn frame vừa nhận
+								frameToShow = fullFrame
+	
+							# Smooth HD playback
 							now = time()
 							if self.lastFrameTime is None:
-								# Frame đầu: show ngay, đánh dấu mốc time
+								# frame đầu tiên: show ngay, ghi nhận mốc thời gian
 								self.lastFrameTime = now
 							else:
 								elapsed = now - self.lastFrameTime
-								# Nếu frame tới quá sớm -> chờ cho đủ targetInterval 
+								# Nếu frame tới quá sớm → chờ cho đủ targetInterval để giữ FPS ổn định
 								if elapsed < self.targetInterval:
 									sleep(self.targetInterval - elapsed)
-								# Cập nhật lại mốc time sau khi đợi xong
+								# cập nhật lại mốc thời gian
 								self.lastFrameTime = time()
         
-							imageFile = self.writeFrame(self.frameBuffer)
+							# Ghi frame ra file cache-<sessionId>.jpg và update GUI
+							imageFile = self.writeFrame(frameToShow)
 							self.updateMovie(imageFile)
-       
+
 							# Đếm số frame đã show (dùng cho thống kê loss)
 							self.frameDisplayed += 1
        
-							# Chuẩn bị buffer cho frame tiếp theo
+							# chuẩn bị buffer cho frame tiếp theo
 							self.frameBuffer = bytearray()
-          
-			except: # timeout, socket đóng (teardown), pause ...
+			
+			except:	# timeout, socket đóng (TEARDOWN), PAUSE...
 				# Stop listening upon requesting PAUSE or TEARDOWN
-				if self.playEvent.isSet(): # nếu đã bật set (flag = True) thoát vòng lặp, ngừng lắng nghe RTP
+				if self.playEvent.isSet(): 	# PAUSE / TEARDOWN đã báo dừng
 					break
-				
-				# Upon receiving ACK for TEARDOWN request,
-				# close the RTP socket
+ 
+				# Upon receiving ACK for TEARDOWN request, close the RTP socket
 				if self.teardownAcked == 1:
 					self.rtpSocket.shutdown(socket.SHUT_RDWR)
 					self.rtpSocket.close()
 					break
-			
+   
 	"""Ghi payload (JPEG) ra file cache-<sessionId>.jpg và trả về tên file."""
 	def writeFrame(self, data):
 		"""Write the received frame to a temp image file. Return the image file."""
@@ -364,6 +439,24 @@ class Client:
 						self.openRtpPort() 
 					elif self.requestSent == self.PLAY:
 						self.state = self.PLAYING
+      
+						# Reset thống kê cho mỗi lần PLAY (mỗi session xem mới) -> 
+						# để mỗi lần bấm PLAY sẽ có 1 bộ stats riêng, không bị dính với lần PLAY trước
+						# Khi cache bật, thống kê sẽ bỏ qua hoàn toàn giai đoạn prebuffer (vì lúc đó cachePrebuffering=True + stats đang reset)
+						# startTime chỉ bắt đầu lại khi thật sự đếm loss (sau prebuffer)
+						self.firstSeq = None
+						self.maxSeq = 0
+						self.frameDisplayed = 0
+						self.totalBytes = 0
+						self.startTime = None
+						self.lastFrameTime = None
+						self.framesReceived = 0
+      
+						# Client-side caching: reset buffer + bật pre-buffer
+						if self.enableCache:
+							self.frameCache.clear()
+							self.cachePrebuffering = True
+       
 					elif self.requestSent == self.PAUSE:
 						self.state = self.READY
       
@@ -380,6 +473,11 @@ class Client:
       
 						# In thống kê ngay khi server xác nhận TEARDOWN
 						self.reportStats()
+      
+						# Client-side caching: dọn buffer
+						if self.enableCache:
+							self.frameCache.clear()
+							self.cachePrebuffering = False
 	
 	def openRtpPort(self):
 		"""Open RTP socket binded to a specified port."""
@@ -408,7 +506,7 @@ class Client:
 		totalFrames = self.maxSeq - self.firstSeq + 1
 		totalFrames = max(totalFrames, 0)
   
-		lostFrames = max(0, totalFrames - self.frameDisplayed)
+		lostFrames = max(0, totalFrames - self.framesReceived)
   
 		lossRate = (lostFrames / totalFrames) if totalFrames > 0 else 0.0
   

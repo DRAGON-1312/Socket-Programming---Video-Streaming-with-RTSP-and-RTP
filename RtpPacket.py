@@ -10,16 +10,16 @@ class RtpPacket:
 		
 	def encode(self, version, padding, extension, cc, seqnum, marker, pt, ssrc, payload):
 		"""Encode the RTP packet with header fields and payload."""
-		timestamp = int(time()) # lấy time hiện tại (tính bằng giây) làm timestamp cho gói RTP
-		header = bytearray(HEADER_SIZE) # dùng bytearray để gán từng byte được (mutable)
+		timestamp = int(time()) # RTP timestamp: dùng thời gian hiện tại (giây, tăng dần theo thời gian)
+		header = bytearray(HEADER_SIZE) # 12-byte RTP header (mutable để gán từng byte)
 		#--------------
 		# TO COMPLETE
 		#--------------
 		# Fill the header bytearray with RTP header fields
 		
-		# First byte: version (2 bits), padding (1 bit), extension (1 bit), CC (4 bits)
+		# Byte 0: V(2) | P(1) | X(1) | CC(4)
 		header[0] = ((version & 0x03) << 6) | ((padding & 0x01) << 5) | ((extension & 0x01) << 4) | (cc & 0x0F)
-		# Second byte: marker (1 bit) and payload type (7 bits)
+		# Byte 1: M(1) | PT(7)
 		header[1] = ((marker & 0x01) << 7) | (pt & 0x7F)
 		# Sequence number (16 bits)
 		header[2] = (seqnum >> 8) & 0xFF
@@ -36,7 +36,6 @@ class RtpPacket:
 		header[11] = ssrc & 0xFF
   
 		self.header = header
-  
 		# Get the payload from the argument
 		self.payload = payload
 		
