@@ -16,7 +16,7 @@ Install dependencies with:
 python -m pip install -r requirements.txt
 ```
 
-## Run Server
+## Run Server (In a separate terminal)
 ### NOTE: Server must be run first before Client.
 
 Start the server on a chosen port (example `8554`):
@@ -27,7 +27,7 @@ python Server.py 8554
 
 The server will listen for incoming RTSP/TCP connections and will spawn a worker per client.
 
-## Run Client
+## Run Client (In a separate terminal)
 1. Launch the client with server address, RTSP port, RTP port (local UDP port to receive RTP), and video filepath. Example:
 
 ```powershell
