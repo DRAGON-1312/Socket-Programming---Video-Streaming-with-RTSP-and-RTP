@@ -123,18 +123,19 @@ class Client:
 		if self.state == self.INIT: 
 			self.sendRtspRequest(self.SETUP)
 	
-	"""dừng thread trước, rồi mới xóa file"""
 	def exitClient(self):
 		"""Teardown button handler."""
+		# CHẶN INIT: chưa SETUP thì không teardown, không đóng app
+		if self.state == self.INIT:
+			tkinter.messagebox.showinfo("Not ready", "Please click SETUP before TEARDOWN.")
+			return
 
-		# Báo thread nhận RTP dừng lại
+		# (giữ nguyên phần còn lại)
 		if hasattr(self, "playEvent"):
 			self.playEvent.set()
 
-		# Gửi TEARDOWN
 		self.sendRtspRequest(self.TEARDOWN)
 
-		# Xoá file cache nếu có, tránh crash trên Windows
 		cache_path = CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT
 		try:
 			if os.path.exists(cache_path):
@@ -142,7 +143,6 @@ class Client:
 		except PermissionError:
 			pass
 
-		# Đóng cửa sổ GUI
 		self.master.destroy()
 
 	def pauseMovie(self):
