@@ -32,6 +32,8 @@ The server will listen for incoming RTSP/TCP connections and will spawn a worker
 
 ```powershell
 python ClientLauncher.py 127.0.0.1 8554 25000 movie.Mjpeg
+# Test 720p for HD Video Streaming: 
+python ClientLauncher.py 127.0.0.1 8554 9999 sample_1280x720.Mjpeg
 ```
 
 2. The client opens a small Tkinter window with buttons: `Setup`, `Play`, `Pause`, `Teardown`.
