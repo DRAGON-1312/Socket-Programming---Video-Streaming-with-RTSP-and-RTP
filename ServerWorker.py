@@ -4,37 +4,58 @@ import sys, traceback, threading, socket
 from VideoStream import VideoStream
 from RtpPacket import RtpPacket
 
-# Addition for HD Video Streaming
-MAX_RTP_PAYLOAD = 1400  # HD: tối đa ~1400 bytes payload/packet
-
+# HD Video Streaming:
+# - RTP/UDP thường nên giới hạn payload ~1400 bytes để tránh IP fragmentation
+# (vì MTU Ethernet ~1500, trừ header IP/UDP/RTP).
+# Nếu frame JPEG lớn hơn ngưỡng này -> phải "cắt nhỏ" frame ra nhiều gói RTP
+MAX_RTP_PAYLOAD = 1400  # payload tối đa cho mỗi gói RTP (HD streaming)
+ 
 class ServerWorker:
+    # Các RTSP method mà client gửi lên (RTSP request)
 	SETUP = 'SETUP'
 	PLAY = 'PLAY'
 	PAUSE = 'PAUSE'
 	TEARDOWN = 'TEARDOWN'
 	
-	INIT = 0
-	READY = 1
-	PLAYING = 2
+	# Trạng thái phiên RTSp
+	INIT = 0  # chưa SETUP
+	READY = 1 # Đã setup, sẵn sàng PLAY
+	PLAYING = 2 # đang gửi RTP packets
+ 
+	# Lưu trạng thái hiện tại (mặc định là INIT)
 	state = INIT
 
 	OK_200 = 0
 	FILE_NOT_FOUND_404 = 1
 	CON_ERR_500 = 2
 	
+	# clientInfo: dict lưu toàn bộ thông tin liên quan đến 1 client session
+	# Các key thường gặp:
+	# 'rtspSocket': tuple (connSocket, clientAddr)
+			# + connSocket: socket TCP dùng để gửi/nhận RTSP
+			# + clientAddr: (ip, port) của client phía RTSP
+	# session: session id RTSP (server tạo random)
+	# videoStream: đối tượng VideoStream để đọc frame JPEG
+	# rtpPort: cổng UDP phía client để server gửi RTP tới
+	# 'rtpSocket': socket UDP phía server dùng để sendto RTP
+	# 'event': threading.Event để báo dừng (PAUSE/TEARDOWN)
+	# 'worker': thread đang chạy sendRtp()
 	clientInfo = {}
 	
 	def __init__(self, clientInfo):
+		# Nhận clientInfo từ Server.py/ServerWorker creator
 		self.clientInfo = clientInfo
 		
 	def run(self):
+		# Tạo thread riêng để lắng nghe RTSP request (TCP)
 		threading.Thread(target=self.recvRtspRequest).start()
 	
 	def recvRtspRequest(self):
-		"""Receive RTSP request from the client."""
+		"""Receive RTSP request from the client qua TCP (rtspSocket)"""
 		connSocket = self.clientInfo['rtspSocket'][0]
 		while True:            
 			data = connSocket.recv(256)
+			# nếu có dữ liệu thì decode và chuyển qua xử lý
 			if data:
 				print("Data received:\n" + data.decode("utf-8"))
 				self.processRtspRequest(data.decode("utf-8"))
@@ -44,9 +65,9 @@ class ServerWorker:
 		# Get the request type
 		request = data.split('\n')
 		line1 = request[0].split(' ')
-		requestType = line1[0]
+		requestType = line1[0] # SETUP/PLAY/PAUSE/TEARDOWN
 		
-		# Get the media file name
+  		# Get the media file name
 		filename = line1[1]
 		
 		# Get the RTSP sequence number 
@@ -59,11 +80,14 @@ class ServerWorker:
 				print("processing SETUP\n")
 				
 				try:
+					# Tạo VideoStream để đọc frame 
 					self.clientInfo['videoStream'] = VideoStream(filename)
 					self.state = self.READY
 				except IOError:
+					# Không mở được file -> báo lỗi 404
 					self.replyRtsp(self.FILE_NOT_FOUND_404, seq[1])
-				
+					return 			
+    
 				# Generate a randomized RTSP session ID
 				self.clientInfo['session'] = randint(100000, 999999)
 				

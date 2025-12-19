@@ -1,21 +1,42 @@
 class VideoStream:
 	def __init__(self, filename):
+		# Lưu tên file video
 		self.filename = filename
+  
+		# Mở file ở chế độ nhị phân để đọc bytes (JPEG là dữ liệu nhị phân)
 		try:
 			self.file = open(filename, 'rb')
 		except:
+			# Nếu mở file lỗi (không tồn tại / không quyền), ném IOError
 			raise IOError
+
+		# Bộ đệm số frame đã đọc (frame number)
 		self.frameNum = 0
   
 		# Detect file format: lab (length+JPEG) vs raw MJPEG (SOI/EOI)
-		# Lab format {movie.Mjpeg}: 5 byte ASCII độ dài + JPEG frame
-		# MJPEG samples (720p/1080p): chuỗi JPEG nối tiếp, phân cách bởi
-		# SOI (0xFFD8) và EOI (0xFFD9).
+        #
+        # 1) Lab format (movie.Mjpeg của bài lab):
+        #    Mỗi frame lưu theo cấu trúc:
+        #       [5 bytes ASCII độ dài][JPEG bytes...]
+        #    Ví dụ: "00123" + 123 bytes JPEG
+        #
+        # 2) Raw MJPEG samples (720p/1080p):
+        #    File chỉ là chuỗi các ảnh JPEG nối tiếp nhau,
+        #    phân cách bằng marker:
+        #       SOI = 0xFFD8 (Start Of Image)
+        #       EOI = 0xFFD9 (End Of Image)
+        #
+        # Ta đọc trước 5 bytes đầu để đoán định dạng.
 		peek = self.file.read(5)
-		self.mode = "lab"
-		self.data = None # dùng cho chế độ mjpeg
-		self._offset = 0        # offset hiện tại trong self.data (mjpeg)
   
+		# Mặc định giả sử là lab, sau đó sẽ kiểm tra lại
+		self.mode = "lab"
+		# Dùng cho chế độ mjpeg (raw MJPEG): sẽ chứa toàn bộ file trong RAM
+		self.data = None 
+  		# Offset hiện tại trong self.data (vị trí đang đọc tới) cho chế độ mjpeg
+		self._offset = 0        
+  
+		# Nếu file rỗng -> không làm gì thêm
 		if not peek:
 			return
 
